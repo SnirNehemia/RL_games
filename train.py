@@ -49,7 +49,9 @@ def run_episode(env, agent, show_progress=True):
             pbar.update(1)
             pbar.set_postfix(curr_rew=total_reward)
 
-    return total_reward, rewards, log_probs, states, action_probabilities
+    # Get final snake length at the end of the episode
+    snake_length = len(env.snake)
+    return total_reward, rewards, log_probs, states, action_probabilities, snake_length
 
 def compute_returns(rewards):
 
@@ -99,6 +101,21 @@ def plot_performance(episode_rewards, save_path):
     plt.close()
     print(f"Performance plot saved to '{save_path}'")
 
+def plot_snake_length(episode_lengths, save_path):
+    """Saves a plot of snake length over time."""
+    if plt is None:
+        print("Cannot plot snake length, 'matplotlib' is not installed.")
+        return
+    plt.figure(figsize=(12, 6))
+    plt.plot(episode_lengths)
+    plt.title('Agent Performance: Final Snake Length per Episode')
+    plt.xlabel('Episode')
+    plt.ylabel('Final Snake Length')
+    plt.grid(True)
+    plt.savefig(save_path)
+    plt.close()
+    print(f"Snake length plot saved to '{save_path}'")
+
 def train():
     # Train the agent using REINFORCE algorithm
     if config.run_parameters.run_mode != 'training':
@@ -113,6 +130,7 @@ def train():
     torch.manual_seed(config.seed)
     start_time = time.time()
     episode_rewards = []
+    episode_snake_lengths = []
 
     # Prepare environment parameters
     env_config = config.env_parameters
@@ -150,10 +168,11 @@ def train():
     pbar = tqdm.tqdm(range(config.run_parameters.n_episodes), desc="Training Snake", position=0)
 
     for episode in pbar:
-        total_reward, rewards, log_probs, _, action_probs_list = run_episode(
+        total_reward, rewards, log_probs, _, action_probs_list, snake_length = run_episode(
             env, agent, show_progress=config.run_parameters.show_episode_progress
         )
         episode_rewards.append(total_reward)
+        episode_snake_lengths.append(snake_length)
 
         discounted_rewards = compute_returns(rewards)
 
@@ -187,7 +206,7 @@ def train():
 
         pbar.set_postfix({
             "reward": f"{total_reward:.2f}",
-            "steps": len(log_probs),
+            "length": snake_length,
         })
 
     # After the loop, update with any remaining episodes in the last batch
@@ -207,6 +226,9 @@ def train():
     if plt:
         plot_path = os.path.join(save_dir, f"{config.save_parameters.run_name}_performance.png")
         plot_performance(episode_rewards, plot_path)
+
+        length_plot_path = os.path.join(save_dir, f"{config.save_parameters.run_name}_snake_length.png")
+        plot_snake_length(episode_snake_lengths, length_plot_path)
 
     # Generate end-of-training videos for all saved models
     global generate_video

@@ -7,26 +7,26 @@ run_parameters:
   run_mode: 'training'
   state_type: "grid" # Options: "raycast", "grid"
   state_size: 11
-  hidden_size: [128, 128]
+  hidden_size: [128, 128, 128]
   learning_rate: 0.0025
-  entropy_coeff: 0.025 # Coefficient for the entropy bonus to encourage exploration
+  entropy_coeff: 0.05 # Coefficient for the entropy bonus to encourage exploration
   batch_size: 50
-  n_episodes: 500
-  gamma: 0.9
+  n_episodes: 10000
+  gamma: 0.95
   show_episode_progress: false # Show the tqdm bar for steps within an episode
 
 env_parameters:
-  w: 10
-  h: 10
+  w: 32
+  h: 32
   reward_type: "dense" # Options: "sparse", "dense"
   reward_values:
-    food: 50
-    death: -10
-    step: -1
+    food: 10
+    death: -1
+    step: -0.01
   max_steps_multiplier: 100 # Game ends if steps > len(snake) * multiplier
 
 save_parameters:
-  run_name: "test5"
-  save_actor_frequency: 100 # Save the actor model every N episodes
+  run_name: "test8"
+  save_actor_frequency: 1000 # Save the actor model every N episodes
   video_seeds: [1,2]
   
