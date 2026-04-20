@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Agent Environment - Tag & Re-mapping (POMDP Disguised)</title>
+<style>
+    body {
+        background-color: #050505;
+        color: #0f0;
+        font-family: 'Courier New', Courier, monospace;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        min-height: 100vh;
+        margin: 0;
+        padding: 15px 10px;
+        box-sizing: border-box;
+        overflow-x: hidden;
+    }
+    #game-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        width: 100%;
+        max-width: 400px;
+        gap: 15px;
+    }
+    #ui {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px 15px;
+        background: #111;
+        padding: 12px 20px;
+        border: 1px solid #333;
+        font-size: 1rem;
+        width: 100%;
+        box-sizing: border-box;
+    }
+    #ui div {
+        display: flex;
+        justify-content: space-between;
+    }
+    canvas {
+        border: 2px solid #333;
+        background-color: #000;
+        box-shadow: 0 0 15px rgba(0, 255, 0, 0.1);
+        width: 250px;
+        height: 250px;
+    }
+    
+    /* Cross D-Pad Layout */
+    #controls {
+        display: grid;
+        grid-template-columns: 70px 70px 70px;
+        grid-template-rows: 70px 70px 70px;
+        gap: 10px;
+        justify-content: center;
+    }
+    #btn-top { grid-column: 2; grid-row: 1; }
+    #btn-left { grid-column: 1; grid-row: 2; }
+    #btn-center { grid-column: 2; grid-row: 2; }
+    #btn-right { grid-column: 3; grid-row: 2; }
+    #btn-bottom { grid-column: 2; grid-row: 3; }
+
+    .control-btn {
+        background-color: #111;
+        color: #0f0;
+        border: 2px solid #333;
+        font-size: 1.4rem;
+        font-family: 'Courier New', Courier, monospace;
+        font-weight: bold;
+        cursor: pointer;
+        border-radius: 8px;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.1s;
+    }
+    .control-btn:active:not(.selected-btn) {
+        background-color: #0f0;
+        color: #000;
+    }
+    .selected-btn {
+        border-color: #ff0;
+        color: #ff0;
+        background-color: #330;
+    }
+
+    #remap-toggle {
+        width: 100%;
+        max-width: 230px;
+        padding: 12px;
+        background-color: #111;
+        color: #0f0;
+        border: 1px dashed #0f0;
+        font-family: 'Courier New', Courier, monospace;
+        font-weight: bold;
+        font-size: 1rem;
+        cursor: pointer;
+        text-transform: uppercase;
+        border-radius: 5px;
+    }
+
+    #leaderboard {
+        width: 100%;
+        background: #111;
+        border: 1px solid #333;
+        height: 150px;
+        overflow-y: auto;
+        padding: 10px;
+        box-sizing: border-box;
+    }
+    #leaderboard h3 {
+        text-align: center;
+        color: #0f0;
+        margin-top: 0;
+        margin-bottom: 10px;
+        border-bottom: 1px solid #333;
+        padding-bottom: 5px;
+        font-size: 1rem;
+    }
+    #leaderboard table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+    }
+    #leaderboard th, #leaderboard td {
+        text-align: left;
+        padding: 4px;
+        border-bottom: 1px solid #222;
+    }
+    #leaderboard th {
+        color: #888;
+    }
+</style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="ui">
+        <div><span>E:</span> <span id="ep">1</span></div>
+        <div><span>Step:</span> <span id="step">0</span></div>
+        <div><span>Pos:</span> <span id="pos" style="color:#0ff;">(1, 1)</span></div>
+        <div><span>R<sub>t</sub>:</span> <span id="rt">0</span></div>
+        <div style="grid-column: span 2; width: 100%; border-top: 1px solid #333; padding-top: 8px; margin-top: 2px;">
+            <span>Total G:</span> <span id="g">0.00</span>
+        </div>
+    </div>
+    
+    <canvas id="env" width="250" height="250"></canvas>
+
+    <div id="controls">
+        <button class="control-btn" id="btn-top" data-btn="0">A</button>
+        <button class="control-btn" id="btn-left" data-btn="1">B</button>
+        <button class="control-btn" id="btn-center" data-btn="2">C</button>
+        <button class="control-btn" id="btn-right" data-btn="3">D</button>
+        <button class="control-btn" id="btn-bottom" data-btn="4">E</button>
+    </div>
+
+    <button id="remap-toggle">Swap Mode: OFF</button>
+
+    <div id="leaderboard">
+        <h3>HISTORY</h3>
+        <table id="scores-table">
+            <thead>
+                <tr>
+                    <th>Attempt #</th>
+                    <th>Final G</th>
+                </tr>
+            </thead>
+            <tbody id="scores-body">
+                </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('env');
+    const ctx = canvas.getContext('2d');
+
+    const rtDisplay = document.getElementById('rt');
+    const gDisplay = document.getElementById('g');
+    const epDisplay = document.getElementById('ep');
+    const stepDisplay = document.getElementById('step');
+    const posDisplay = document.getElementById('pos');
+    const scoresBody = document.getElementById('scores-body');
+    const remapToggleBtn = document.getElementById('remap-toggle');
+
+    const tileSize = 50; 
+    const viewRadius = 2; // 5x5 view
+    const gamma = 0.95;
+
+    const originalMap = [
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,1,0,1],
+        [1,0,0,0,1,0,1,1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,1],
+        [1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,0,1,0,1],
+        [1,0,0,0,0,0,1,0,0,0,1,0,0,0,0,0,1,0,0,0,1,0,1,0,1],
+        [1,0,0,0,0,0,1,1,1,0,1,0,1,1,1,0,1,1,1,0,1,0,0,0,1],
+        [1,0,0,0,0,0,0,0,1,0,0,0,1,0,1,0,0,0,1,0,1,1,1,0,1],
+        [1,1,1,1,1,1,1,1,1,1,1,0,1,0,1,1,1,1,1,1,1,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,1,0,1,0,0,0,0,0,0,0,0,0,1,0,1],
+        [1,0,1,1,1,0,1,1,1,0,1,0,1,1,1,1,1,1,1,1,1,1,1,0,1],
+        [1,0,0,0,0,0,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1],
+        [1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,0,1],
+        [1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,0,1],
+        [1,0,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,0,1,0,1],
+        [1,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,0,1,0,1],
+        [1,0,0,0,1,0,1,1,1,1,1,1,1,1,1,1,1,0,1,0,1,0,1,0,1],
+        [1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,0,1,0,1,0,1,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,0,0,0,1,0,1],
+        [1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,0,1,1,1,1,1,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,0,0,0,0,0,0,0,1],
+        [1,0,1,1,1,1,1,1,1,1,1,1,1,0,1,0,1,1,1,1,1,1,1,0,1],
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+    ];
+
+    let envMap = JSON.parse(JSON.stringify(originalMap));
+    let px = 1; let py = 1;
+    let nx = 3; let ny = 3; 
+    let stepCount = 0;
+    let currentG = 0;
+    let episode = 1;
+    let isResetting = false;
+    let scoresHistory = [];
+
+    // Setup Swapping State
+    let isRemapping = false;
+    let selectedBtnForSwap = null;
+
+    remapToggleBtn.addEventListener('click', () => {
+        isRemapping = !isRemapping;
+        if (isRemapping) {
+            remapToggleBtn.innerText = "Swap Mode: ON (Tap 2)";
+            remapToggleBtn.style.backgroundColor = "#ff0";
+            remapToggleBtn.style.color = "#000";
+            remapToggleBtn.style.border = "1px solid #ff0";
+        } else {
+            remapToggleBtn.innerText = "Swap Mode: OFF";
+            remapToggleBtn.style.backgroundColor = "#111";
+            remapToggleBtn.style.color = "#0f0";
+            remapToggleBtn.style.border = "1px dashed #0f0";
+            if (selectedBtnForSwap) {
+                selectedBtnForSwap.classList.remove('selected-btn');
+                selectedBtnForSwap = null;
+            }
+        }
+    });
+
+    const baseActions = [
+        {dx: 0, dy: -1}, // Up
+        {dx: 0, dy: 1},  // Down
+        {dx: -1, dy: 0}, // Left
+        {dx: 1, dy: 0},  // Right
+        {dx: 0, dy: 0}   // Do Nothing
+    ];
+    
+    // Scramble policy mapping (0-4)
+    let actionIndices = [0, 1, 2, 3, 4];
+    actionIndices.sort(() => Math.random() - 0.5);
+
+    function updateUI(r) {
+        rtDisplay.innerText = r >= 0 ? `+${r.toFixed(1)}` : r.toFixed(1);
+        gDisplay.innerText = currentG.toFixed(2);
+        stepDisplay.innerText = stepCount;
+        posDisplay.innerText = `(${px}, ${py})`; 
+    }
+
+    function updateLeaderboard() {
+        scoresHistory.push({ ep: episode, score: currentG.toFixed(2) });
+        scoresBody.innerHTML = '';
+        for (let i = scoresHistory.length - 1; i >= 0; i--) {
+            const row = document.createElement('tr');
+            row.innerHTML = `<td>${scoresHistory[i].ep}</td><td>${scoresHistory[i].score}</td>`;
+            scoresBody.appendChild(row);
+        }
+    }
+
+    function isNpcOccluded(px, py, nx, ny) {
+        if (px === nx && py === ny) return false;
+
+        let dx = Math.abs(nx - px);
+        let dy = Math.abs(ny - py);
+
+        if (dx === 2 && dy === 0) { 
+            if (envMap[py][(px + nx) / 2] === 1) return true;
+        }
+        if (dy === 2 && dx === 0) { 
+            if (envMap[(py + ny) / 2][px] === 1) return true;
+        }
+        if (dx === 2 && dy === 1) {
+            if (envMap[py][(px + nx) / 2] === 1 || envMap[ny][(px + nx) / 2] === 1) return true;
+        }
+        if (dy === 2 && dx === 1) {
+            if (envMap[(py + ny) / 2][px] === 1 || envMap[(py + ny) / 2][nx] === 1) return true;
+        }
+        if (dx === 2 && dy === 2) {
+             if (envMap[py][(px + nx) / 2] === 1 || 
+                 envMap[ny][(px + nx) / 2] === 1 ||
+                 envMap[(py + ny) / 2][px] === 1 ||
+                 envMap[(py + ny) / 2][nx] === 1) return true;
+        }
+        return false;
+    }
+
+    function draw() {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        let npcVisible = false;
+
+        for(let y = -viewRadius; y <= viewRadius; y++) {
+            for(let x = -viewRadius; x <= viewRadius; x++) {
+                let mapX = px + x;
+                let mapY = py + y;
+                
+                let tile = 1; 
+                if(mapY >= 0 && mapY < envMap.length && mapX >= 0 && mapX < envMap[0].length) {
+                    tile = envMap[mapY][mapX];
+                }
+
+                if(tile === 1) ctx.fillStyle = '#111827';
+                else if(tile === 0) ctx.fillStyle = '#0a0a0a';
+
+                let drawX = (x + viewRadius) * tileSize;
+                let drawY = (y + viewRadius) * tileSize;
+                ctx.fillRect(drawX, drawY, tileSize, tileSize);
+                
+                ctx.strokeStyle = '#050505';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(drawX, drawY, tileSize, tileSize);
+
+                if (mapX === nx && mapY === ny) {
+                    if (!isNpcOccluded(px, py, nx, ny)) {
+                        npcVisible = true;
+                    }
+                }
+            }
+        }
+
+        ctx.fillStyle = '#06b6d4';
+        let agentPos = viewRadius * tileSize;
+        let offset = 12; 
+        ctx.fillRect(agentPos + offset, agentPos + offset, tileSize - (offset*2), tileSize - (offset*2));
+
+        if (npcVisible) {
+            ctx.fillStyle = '#d946ef';
+            let nxDraw = (nx - px + viewRadius) * tileSize;
+            let nyDraw = (ny - py + viewRadius) * tileSize;
+            ctx.fillRect(nxDraw + offset, nyDraw + offset, tileSize - (offset*2), tileSize - (offset*2));
+        }
+    }
+
+    function resetEnv() {
+        updateLeaderboard();
+        
+        currentG = 0;
+        stepCount = 0;
+        episode++;
+        px = 1; py = 1;
+        
+        let validStart = false;
+        while (!validStart) {
+            nx = Math.floor(Math.random() * (envMap[0].length - 2)) + 1;
+            ny = Math.floor(Math.random() * (envMap.length - 2)) + 1;
+            if (envMap[ny][nx] === 0 && (Math.abs(px - nx) + Math.abs(py - ny) > 5)) {
+                validStart = true;
+            }
+        }
+        
+        epDisplay.innerText = episode;
+        updateUI(0);
+        draw();
+        isResetting = false;
+    }
+
+    function updateNpc() {
+        if (isResetting) return;
+
+        let bestMove = {dx: 0, dy: 0};
+        let maxDistanceSum = -1;
+
+        for (let move of baseActions) {
+            let nextNx = nx + move.dx;
+            let nextNy = ny + move.dy;
+
+            if (nextNy < 0 || nextNy >= envMap.length || nextNx < 0 || nextNx >= envMap[0].length || envMap[nextNy][nextNx] === 1) {
+                continue;
+            }
+
+            let dist = Math.abs(nextNx - px) + Math.abs(nextNy - py);
+            let evaluation = dist;
+
+            if (isNpcOccluded(px, py, nextNx, nextNy)) {
+                evaluation += 2; 
+            }
+            
+            if (evaluation > maxDistanceSum) {
+                maxDistanceSum = evaluation;
+                bestMove = move;
+            }
+        }
+
+        nx += bestMove.dx;
+        ny += bestMove.dy;
+    }
+
+    function takeStep(actionId) {
+        if(isResetting) return;
+        
+        let action = baseActions[actionIndices[actionId]];
+        let nx_agent = px + action.dx;
+        let ny_agent = py + action.dy;
+        
+        let r = 0;
+        let terminal = false;
+
+        if (action.dx === 0 && action.dy === 0) {
+            r = -0.05; 
+        } else if(ny_agent < 0 || ny_agent >= envMap.length || nx_agent < 0 || nx_agent >= envMap[0].length) {
+            r = -1; 
+        } else {
+            let tile = envMap[ny_agent][nx_agent];
+            if(tile === 1) {
+                r = -1; 
+            } else if (tile === 0) {
+                px = nx_agent; py = ny_agent;
+            }
+        }
+
+        if (px === nx && py === ny) {
+            r = 1000;
+            terminal = true;
+        } else {
+             updateNpc(); 
+             if (px === nx && py === ny) {
+                r = 1000;
+                terminal = true;
+             } else {
+                 r -= 0.1; 
+             }
+        }
+
+        currentG += r * Math.pow(gamma, stepCount);
+        stepCount++;
+
+        updateUI(r);
+        draw();
+
+        if(terminal) {
+            isResetting = true;
+            setTimeout(resetEnv, 400);
+        }
+    }
+
+    // Bind on-screen buttons
+    document.querySelectorAll('.control-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            // Re-mapping logic
+            if (isRemapping) {
+                if (!selectedBtnForSwap) {
+                    selectedBtnForSwap = e.target;
+                    selectedBtnForSwap.classList.add('selected-btn');
+                } else {
+                    // Swap values
+                    let tempAction = selectedBtnForSwap.getAttribute('data-btn');
+                    let tempText = selectedBtnForSwap.innerText;
+                    
+                    selectedBtnForSwap.setAttribute('data-btn', e.target.getAttribute('data-btn'));
+                    selectedBtnForSwap.innerText = e.target.innerText;
+                    
+                    e.target.setAttribute('data-btn', tempAction);
+                    e.target.innerText = tempText;
+
+                    selectedBtnForSwap.classList.remove('selected-btn');
+                    selectedBtnForSwap = null;
+                }
+                return;
+            }
+
+            // Normal game execution
+            const actionId = parseInt(e.target.getAttribute('data-btn'));
+            takeStep(actionId);
+        });
+    });
+
+    draw();
+</script>
+</body>
+</html>
