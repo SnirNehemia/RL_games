@@ -1,12 +1,22 @@
+import os
+import sys
+
+# Get the directory of the current script (train.py)
+script_dir = os.path.dirname(os.path.abspath(__file__))
+# Get the parent directory of the script_dir, which is 'd:\python\RL_games'
+project_root = os.path.dirname(script_dir)
+# Insert the project root to the beginning of sys.path to make 'Snake' discoverable as a package.
+sys.path.insert(0, project_root)
+
 from omegaconf import OmegaConf
-from Game import SnakeEnv
-from brain import actor
-import tqdm, time, os, sys, glob
+from Snake.Game import SnakeEnv
+import Snake.brain as brain
+import tqdm, time, glob
 import torch
 from torch.distributions import Categorical
 # Add a try-except block for the import to provide a helpful message
 try:
-    from generate_videos import generate_video
+    from Snake.generate_videos import generate_video
 except ImportError:
     print("Warning: 'generate_videos.py' not found. End-of-training video generation will be skipped.")
     generate_video = None
@@ -18,9 +28,9 @@ except ImportError:
     print("Warning: 'matplotlib' not found. Performance plot will not be generated.")
     plt = None
 
-config = OmegaConf.load("config.yaml")
+config = OmegaConf.load("Snake/config.yaml")
 
-def run_episode(env, agent, show_progress=True):
+def run_episode(env, agent, device, show_progress=True):
     state, _ = env.reset()
     done = False
     total_reward = 0
@@ -32,7 +42,7 @@ def run_episode(env, agent, show_progress=True):
     with tqdm.tqdm(desc=f"Episode progress", leave=False, unit=" step",
                    disable=not show_progress) as pbar:
         while not done:
-            state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)  # Add batch dimension
+            state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)  # Add batch dimension
             action_probs = agent(state_tensor)
             m = Categorical(action_probs)
             action = m.sample()
@@ -53,7 +63,7 @@ def run_episode(env, agent, show_progress=True):
     snake_length = len(env.snake)
     return total_reward, rewards, log_probs, states, action_probabilities, snake_length
 
-def compute_returns(rewards):
+def compute_returns(rewards, device):
 
     # Compute discounted rewards
     discounted_rewards = []
@@ -61,7 +71,7 @@ def compute_returns(rewards):
     for r in rewards[::-1]:
         R = r + config.run_parameters.gamma * R
         discounted_rewards.insert(0, R)
-    discounted_rewards = torch.tensor(discounted_rewards, dtype=torch.float32)
+    discounted_rewards = torch.tensor(discounted_rewards, dtype=torch.float32).to(device)
 
     # Normalize rewards
     discounted_rewards = (discounted_rewards - discounted_rewards.mean()) / (discounted_rewards.std() + 1e-9)
@@ -117,6 +127,7 @@ def plot_snake_length(episode_lengths, save_path):
     print(f"Snake length plot saved to '{save_path}'")
 
 def train():
+    print('training version:', config.project.version)
     # Train the agent using REINFORCE algorithm
     if config.run_parameters.run_mode != 'training':
         print(f"Run mode is '{config.run_parameters.run_mode}', skipping training.")
@@ -126,6 +137,9 @@ def train():
     save_dir = os.path.join("raw_models", config.project.version, config.save_parameters.run_name)
     os.makedirs(save_dir, exist_ok=True)
     OmegaConf.save(config, os.path.join(save_dir, 'config.yaml'))
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
     torch.manual_seed(config.seed)
     start_time = time.time()
@@ -148,14 +162,38 @@ def train():
     match config.run_parameters.state_type:
         case "raycast":
             env = SnakeEnv(state_type='raycast', K=config.run_parameters.state_size, **env_params)
-            input_size=config.run_parameters.state_size*3
+            # 3 one-hot encoded classes for each of the K*3 rays
+            input_size=config.run_parameters.state_size*3*3
         case "grid":
             env = SnakeEnv(state_type='grid', M=config.run_parameters.state_size, **env_params)
-            input_size=config.run_parameters.state_size**2
+            # 3 one-hot encoded classes for each cell in the M*M grid
+            input_size=config.run_parameters.state_size**2*3
         case _:
             env = SnakeEnv(state_type='vector', **env_params)
             input_size=12
-    agent = actor(input_size=input_size, output_size=3, hidden_size=config.run_parameters.hidden_size, seed=config.seed)
+
+    match config.network_parameters.network_type:
+        case "mlp":
+            agent = brain.actor_mlp(input_size=input_size, output_size=3, hidden_size=config.run_parameters.hidden_size, seed=config.seed)
+        case "cnn":
+            # Determine the original 2D shape of the state for the CNN
+            if config.run_parameters.state_type == 'grid':
+                # Shape is (Channels, Height, Width) -> (3, M, M)
+                state_size = config.run_parameters.state_size
+                state_shape = (3, state_size, state_size)
+            elif config.run_parameters.state_type == 'raycast':
+                # Shape is (Channels, Height, Width) -> (3 channels, 3 directions, K steps)
+                state_size = config.run_parameters.state_size
+                state_shape = (3, 3, state_size)
+            else:
+                raise ValueError(f"CNN network type is not supported for state_type '{config.run_parameters.state_type}'")
+
+            agent = brain.actor_cnn(input_size=input_size, output_size=3, mlp_head_size=config.network_parameters.mlp_head_size,
+                                    kernel_sizes=config.network_parameters.kernel_sizes, cnn_filters=config.network_parameters.cnn_filters,
+                                    seed=config.seed, state_shape=state_shape)
+        case _:
+            raise ValueError(f"Unsupported network type: {config.network_parameters.network_type}")
+    agent.to(device)
     
     optimizer = torch.optim.Adam(agent.parameters(), lr=config.run_parameters.learning_rate)
 
@@ -169,12 +207,12 @@ def train():
 
     for episode in pbar:
         total_reward, rewards, log_probs, _, action_probs_list, snake_length = run_episode(
-            env, agent, show_progress=config.run_parameters.show_episode_progress
+            env, agent, device, show_progress=config.run_parameters.show_episode_progress
         )
         episode_rewards.append(total_reward)
         episode_snake_lengths.append(snake_length)
 
-        discounted_rewards = compute_returns(rewards)
+        discounted_rewards = compute_returns(rewards, device)
 
         # Calculate loss for this episode and accumulate
         episode_loss = calculate_policy_loss(

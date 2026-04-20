@@ -51,9 +51,11 @@ class SnakeEnv(gym.Env):
         if self.state_type == 'vector':
             self.observation_space = spaces.Box(low=0, high=1, shape=(11,), dtype=np.float32)
         elif self.state_type == 'grid':
-            self.observation_space = spaces.Box(low=-1, high=1, shape=(self.M * self.M,), dtype=np.float32)
+            # 3 classes (empty, food, wall/body) are one-hot encoded
+            self.observation_space = spaces.Box(low=0, high=1, shape=(self.M * self.M * 3,), dtype=np.float32)
         elif self.state_type == 'raycast':
-            self.observation_space = spaces.Box(low=-1, high=1, shape=(self.K * 3,), dtype=np.float32)
+            # 3 classes (empty, food, wall/body) are one-hot encoded
+            self.observation_space = spaces.Box(low=0, high=1, shape=(self.K * 3 * 3,), dtype=np.float32)
             
         self.reset()
 
@@ -131,6 +133,22 @@ class SnakeEnv(gym.Env):
 
         self.head = Point(x, y)
 
+    def _one_hot_encode(self, data, num_classes=3):
+        """
+        Converts categorical data to one-hot encoding and flattens the result.
+        Mapping: Empty(0)->[1,0,0], Food(1)->[0,1,0], Wall/Body(-1)->[0,0,1]
+        """
+        data_flat = data.flatten()
+        # Create an array of indices for one-hot encoding.
+        # Default to 0 (Empty).
+        categorical_indices = np.zeros_like(data_flat, dtype=int)
+        categorical_indices[data_flat == 1] = 1  # Food
+        categorical_indices[data_flat == -1] = 2 # Wall/Body
+        
+        one_hot = np.zeros((categorical_indices.size, num_classes), dtype=np.float32)
+        one_hot[np.arange(categorical_indices.size), categorical_indices] = 1
+        return one_hot.flatten()
+
     # --- STATE REPRESENTATIONS ---
 
     def _get_state(self):
@@ -145,8 +163,8 @@ class SnakeEnv(gym.Env):
 
     def _get_grid_state(self):
         """
-        Returns an M x M flattened grid centered on the snake's head.
-        Values: Empty = 0, Food = 1, Wall/Body = -1
+        Returns an M x M grid centered on the snake's head, one-hot encoded and flattened.
+        Classes: Empty, Food, Wall/Body.
         """
         grid = np.zeros((self.M, self.M), dtype=np.float32)
         offset = self.M // 2
@@ -163,15 +181,15 @@ class SnakeEnv(gym.Env):
                 elif self._is_collision(pt):
                     grid[row, col] = -1.0
                     
-        return grid.flatten()
+        return self._one_hot_encode(grid)
 
     def _get_raycast_state(self):
         """
         Casts rays K blocks ahead, left, and right relative to the snake's heading.
-        Returns flattened array of size K * 3.
-        Values: Empty = 0, Food = 1, Wall/Body = -1
+        The result is one-hot encoded and flattened.
+        Classes: Empty, Food, Wall/Body.
         """
-        state = []
+        categorical_state = []
         clock_wise = ['RIGHT', 'DOWN', 'LEFT', 'UP']
         idx = clock_wise.index(self.direction)
         
@@ -188,11 +206,11 @@ class SnakeEnv(gym.Env):
                 
                 pt = Point(check_x, check_y)
                 
-                if pt == self.food: state.append(1.0)
-                elif self._is_collision(pt): state.append(-1.0)
-                else: state.append(0.0)
+                if pt == self.food: categorical_state.append(1.0)
+                elif self._is_collision(pt): categorical_state.append(-1.0)
+                else: categorical_state.append(0.0)
                 
-        return np.array(state, dtype=np.float32)
+        return self._one_hot_encode(np.array(categorical_state, dtype=np.float32))
 
     # --- RENDERING & HUMAN MODE ---
 

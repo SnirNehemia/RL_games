@@ -1,0 +1,40 @@
+seed: 0
+
+project:
+  version: "1.0.1"
+
+network_parameters:
+  network_type: "cnn" # Options: "mlp", "cnn"
+  hidden_size: [128, 128, 128] # for mlp version
+  cnn_filters: [16, 64]   # for cnn version
+  kernel_sizes: [3, 3, 3]     # for cnn version
+  mlp_head_size: [128]          # for cnn version
+  #strides: [1, 1, 1]          # for cnn version
+
+run_parameters:
+  run_mode: 'training'
+  state_type: "grid" # Options: "raycast", "grid"
+  state_size: 9
+  
+  learning_rate: 0.0025
+  entropy_coeff: 0.025 # Coefficient for the entropy bonus to encourage exploration
+  batch_size: 10
+  n_episodes: 500
+  gamma: 0.99
+  show_episode_progress: false # Show the tqdm bar for steps within an episode
+
+env_parameters:
+  w: 32
+  h: 32
+  reward_type: "dense" # Options: "sparse", "dense"
+  reward_values:
+    food: 10
+    death: -1
+    step: -0.01
+  max_steps_multiplier: 100 # Game ends if steps > len(snake) * multiplier
+
+save_parameters:
+  run_name: "test11"
+  save_actor_frequency: 250 # Save the actor model every N episodes
+  video_seeds: [1,2]
+  

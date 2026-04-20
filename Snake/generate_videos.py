@@ -17,8 +17,15 @@ except ImportError:
     print("Module 'imageio' not found. Please install it with 'pip install imageio imageio-ffmpeg' to generate videos.")
     imageio = None
 
-from Game import SnakeEnv
-from brain import actor
+# Get the directory of the current script (generate_videos.py)
+script_dir = os.path.dirname(os.path.abspath(__file__))
+# Get the parent directory of the script_dir, which is 'd:\python\RL_games'
+project_root = os.path.dirname(script_dir)
+# Insert the project root to the beginning of sys.path to make 'Snake' discoverable as a package.
+sys.path.insert(0, project_root)
+
+from Snake.Game import SnakeEnv
+from Snake.brain import actor_mlp, actor_cnn
 
 # --- Visualization constants and helpers ---
 # Colors for visualization
@@ -43,7 +50,15 @@ def draw_grid_visualization(surface, state, M, direction):
     """Draws the agent's grid-based POV, rotated to the snake's perspective."""
     pov_size = surface.get_width()
     cell_size = pov_size / M
-    grid = state.reshape((M, M))
+
+    # Decode the one-hot encoded state back to categorical
+    # state shape is (M*M*3,), reshape to (M, M, 3)
+    grid_one_hot = state.reshape((M, M, 3))
+    # Find the index of the '1' in the last dimension to get the class
+    grid_categorical = np.argmax(grid_one_hot, axis=2)
+    # Map indices back to values: 0->0 (Empty), 1->1 (Food), 2->-1 (Wall/Body)
+    mapping = np.array([0, 1, -1])
+    grid = mapping[grid_categorical]
 
     # Rotate grid so 'up' on the POV display is always the snake's forward direction
     if direction == 'DOWN':
@@ -74,7 +89,18 @@ def draw_grid_visualization(surface, state, M, direction):
 def draw_raycast_visualization(surface, state, K):
     """Draws the agent's raycast-based POV."""
     pov_size = surface.get_width()
-    s_rays, r_rays, l_rays = state[0:K], state[K:2*K], state[2*K:3*K]
+
+    # Decode the one-hot encoded state back to categorical
+    # state shape is (K*3*3,), reshape to (K*3, 3)
+    rays_one_hot = state.reshape((K * 3, 3))
+    # Find the index of the '1' in the last dimension to get the class
+    rays_categorical = np.argmax(rays_one_hot, axis=1)
+    # Map indices back to values: 0->0 (Empty), 1->1 (Food), 2->-1 (Wall/Body)
+    mapping = np.array([0, 1, -1])
+    rays = mapping[rays_categorical]
+
+    s_rays, r_rays, l_rays = rays[0:K], rays[K:2*K], rays[2*K:3*K]
+
     agent_pos = (pov_size / 2, pov_size / 2)
     ray_len_per_step = (pov_size * 0.45) / K
     colors = {0.0: GRAY, 1.0: GREEN, -1.0: RED}
@@ -152,9 +178,11 @@ def get_model_input_size(config):
     state_type = config.run_parameters.state_type
     state_size = config.run_parameters.state_size
     if state_type == "raycast":
-        return state_size * 3
+        # 3 one-hot encoded classes for each of the K*3 rays
+        return state_size * 3 * 3
     elif state_type == "grid":
-        return state_size ** 2
+        # 3 one-hot encoded classes for each cell in the M*M grid
+        return state_size ** 2 * 3
     else: # vector
         return 12
 
@@ -209,15 +237,35 @@ def generate_video(config_path, actor_path, output_path, seed):
         print(f"Warning: Could not initialize fonts, falling back to dummy fonts. Error: {e}")
         TITLE_FONT = ACTION_FONT_BOLD = ACTION_FONT = DummyFont()
 
+    # --- Device Setup ---
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"  Using device: {device}")
+
     # --- Initialize Agent ---
     input_size = get_model_input_size(config)
-    agent = actor(
-        input_size=input_size, 
-        output_size=3, 
-        hidden_size=config.run_parameters.hidden_size, 
-        seed=config.seed
-    )
-    agent.load_state_dict(torch.load(actor_path))
+
+    network_type = config.network_parameters.network_type
+    if network_type == "cnn":
+        if config.run_parameters.state_type == 'grid':
+            state_size = config.run_parameters.state_size
+            state_shape = (3, state_size, state_size)
+        elif config.run_parameters.state_type == 'raycast':
+            state_size = config.run_parameters.state_size
+            state_shape = (3, 3, state_size)
+        else:
+            raise ValueError(f"CNN network type is not supported for state_type '{config.run_parameters.state_type}'")
+
+        agent = actor_cnn(input_size=input_size, output_size=3, mlp_head_size=config.network_parameters.mlp_head_size,
+                          kernel_sizes=config.network_parameters.kernel_sizes, cnn_filters=config.network_parameters.cnn_filters,
+                          seed=config.seed, state_shape=state_shape).to(device)
+    elif network_type == "mlp":
+        agent = actor_mlp(input_size=input_size, output_size=3, hidden_size=config.run_parameters.hidden_size, seed=config.seed).to(device)
+    else:
+        raise ValueError(f"Unsupported network type: {network_type}")
+
+
+    # Load the model, ensuring it's on the correct device
+    agent.load_state_dict(torch.load(actor_path, map_location=device))
     agent.eval() # Set agent to evaluation mode
 
     # --- Setup for combined video frame with POV ---
@@ -251,7 +299,7 @@ def generate_video(config_path, actor_path, output_path, seed):
         pov_frame = np.transpose(pov_frame, (1, 0, 2))
 
         # Agent determines next action based on the current state
-        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
         with torch.no_grad():
             action_probs = agent(state_tensor)
         action = torch.argmax(action_probs, dim=1).item()
