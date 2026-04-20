@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>RL Agent Simulator V4</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #050505;
+            color: #d0ffd0;
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+        }
+        #gameCanvas {
+            background-color: #000;
+            border: 3px double #333;
+            margin-top: 5px;
+            max-width: 100%;
+        }
+        .ui-container {
+            width: 320px;
+            display: flex;
+            justify-content: space-between;
+            margin-top: 5px;
+            font-size: 14px;
+        }
+        .reward-flash {
+            font-weight: bold;
+            transition: color 0.1s;
+        }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            width: 330px;
+            justify-content: center;
+            gap: 3px;
+            margin-top: 10px;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 19%;
+        }
+        .action-btn {
+            width: 100%;
+            height: 50px;
+            background-color: #1a1a1a;
+            color: #d0ffd0;
+            border: 2px solid #555;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            touch-action: none;
+            cursor: pointer;
+            user-select: none;
+        }
+        .action-btn.active-press {
+            background-color: #d0ffd0;
+            color: #000;
+        }
+        select {
+            margin-top: 4px;
+            background: #000;
+            color: #5f5;
+            border: 1px solid #333;
+            width: 100%;
+            font-size: 10px;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        #leaderboard {
+            width: 320px;
+            margin-top: 5px;
+            font-size: 11px;
+            border-top: 1px solid #222;
+            padding-top: 3px;
+            max-height: 70px;
+            overflow-y: auto;
+        }
+        .instructions {
+            width: 320px;
+            font-size: 9px;
+            color: #777;
+            text-align: center;
+            margin-top: 3px;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas" width="320" height="320"></canvas>
+
+    <div class="ui-container">
+        <div>Score: <span id="scoreDisplay">0</span></div>
+        <div>Reward: <span id="rewardDisplay" class="reward-flash">0.00</span></div>
+    </div>
+
+    <div class="controls">
+        <div class="control-group"><button class="action-btn" id="btn1">In 1</button><select id="map1"><option value="SigV">α</option><option value="SigW">β</option><option value="SigX" selected>γ</option><option value="SigY">δ</option><option value="SigZ">ε</option></select></div>
+        <div class="control-group"><button class="action-btn" id="btn2">In 2</button><select id="map2"><option value="SigV">α</option><option value="SigW">β</option><option value="SigX">γ</option><option value="SigY" selected>δ</option><option value="SigZ">ε</option></select></div>
+        <div class="control-group"><button class="action-btn" id="btn3">In 3</button><select id="map3"><option value="SigV">α</option><option value="SigW">β</option><option value="SigX">γ</option><option value="SigY">δ</option><option value="SigZ" selected>ε</option></select></div>
+        <div class="control-group"><button class="action-btn" id="btn4">In 4</button><select id="map4"><option value="SigV" selected>α</option><option value="SigW">β</option><option value="SigX">γ</option><option value="SigY">δ</option><option value="SigZ">ε</option></select></div>
+        <div class="control-group"><button class="action-btn" id="btn5">In 5</button><select id="map5"><option value="SigV">α</option><option value="SigW" selected>β</option><option value="SigX">γ</option><option value="SigY">δ</option><option value="SigZ">ε</option></select></div>
+    </div>
+
+    <div class="instructions">
+        RED=Fast/Descend | GRN=Dbl Jump | BLU=Less Time Penalty<br>
+        Navigate to the box roof, use RED Special to enter.
+    </div>
+
+    <div id="leaderboard">
+        <strong>Previous Runs:</strong>
+        <div id="lb-entries"></div>
+    </div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const scoreDisplay = document.getElementById('scoreDisplay');
+    const rewardDisplay = document.getElementById('rewardDisplay');
+    const lbEntries = document.getElementById('lb-entries');
+
+    // MDP Parameters
+    const GRAVITY = 0.35;
+    const BASE_SPEED = 2.0;
+    const RED_SPEED = 3.5;
+    const JUMP_FORCE = -7.0;
+    const DESCEND_VELOCITY = 6.0;
+
+    // RL Penalties/Rewards
+    const PENALTY_FALL = -100;
+    const PENALTY_SPIKE = -75;
+    const PENALTY_TRAP = -50;
+    const REWARD_WIN = +500;
+    const STEP_PENALTY_DEFAULT = -0.15;
+    const STEP_PENALTY_BLUE = -0.03;
+
+    // Mapping Logic (Shuffled on load)
+    const rawSignals = ['SigV', 'SigW', 'SigX', 'SigY', 'SigZ'];
+    const possibleActions = ['Left', 'Right', 'Jump', 'ColorCycle', 'Special'];
+    possibleActions.sort(() => Math.random() - 0.5);
+    const secretModel = {};
+    rawSignals.forEach((sig, i) => secretModel[sig] = possibleActions[i]);
+
+    // Input States
+    let physicalBtns = { 1: false, 2: false, 3: false, 4: false, 5: false };
+    let activeInputs = { Left: false, Right: false, Jump: false, ColorCycle: false, Special: false };
+    let prevInputs = { Left: false, Right: false, Jump: false, ColorCycle: false, Special: false };
+
+    // Agent State
+    let player = { x: 30, y: 200, vx: 0, vy: 0, w: 14, h: 14, isGrounded: false, colorMode: 1 };
+    let colorList = ['#ff3333', '#33ff33', '#3388ff']; // R, G, B
+    let canDoubleJump = false;
+    let jumpRequested = false;
+    let specialRequested = false;
+    let isDropping = false;
+
+    // Environment Geometry
+    const floorY = 300;
+    const objects = {
+        platforms: [
+            {x: 0, y: floorY, w: 200, h: 20, type: 'solid'}, // Left Ground
+            {x: 270, y: floorY, w: 50, h: 20, type: 'solid'}, // Right Ground
+            {x: 10, y: 240, w: 60, h: 10, type: 'solid'}, // Start
+            {x: 80, y: 190, w: 50, h: 10, type: 'solid'}, // Needs single jump
+            {x: 140, y: 130, w: 50, h: 10, type: 'solid'}, // Needs double jump (Green)
+            
+            // The Box enclosing the goal
+            {x: 200, y: 150, w: 70, h: 10, type: 'dropThrough'}, // Box Ceiling (Entrance)
+            {x: 190, y: 150, w: 10, h: 150, type: 'solid'}, // Box Left Wall
+            {x: 270, y: 150, w: 10, h: 150, type: 'solid'}, // Box Right Wall
+        ],
+        hazards: [
+            // Lethal floor spikes
+            { type: 'spike', x: 20, y: floorY, w: 170, h: 12, isGoal: false },
+            
+            // The Trap inside the box
+            { type: 'trap', x: 245, y: 220, r: 14, isGoal: false }, 
+            
+            // The Goal inside the box (Yellow Spikes)
+            { type: 'spike', x: 200, y: floorY, w: 70, h: 12, isGoal: true }
+        ]
+    };
+
+    let score = 0;
+    let episodeCount = 1;
+    let history = [];
+    let frameCount = 0;
+
+    function resetEpisode(terminalReward, reason = "") {
+        score += terminalReward;
+        
+        history.unshift(`Ep ${episodeCount} [${reason}]: ${score.toFixed(1)}`);
+        if(history.length > 5) history.pop();
+        lbEntries.innerHTML = history.join('<br>');
+
+        rewardDisplay.innerText = terminalReward > 0 ? `+${terminalReward} (WIN!)` : `${terminalReward} (${reason})`;
+        rewardDisplay.style.color = terminalReward > 0 ? '#ff0' : '#f44';
+        setTimeout(() => rewardDisplay.style.color = '#fff', 500);
+
+        // Reset state
+        player.x = 30;
+        player.y = 200; 
+        player.vx = 0;
+        player.vy = 0;
+        player.colorMode = 1; // Start green
+        score = 0;
+        episodeCount++;
+        isDropping = false;
+    }
+
+    function parseInputs() {
+        // Clear active inputs
+        for(let key in activeInputs) activeInputs[key] = false;
+
+        // Map physical buttons to active actions based on current dropdowns
+        for(let i=1; i<=5; i++) {
+            if(physicalBtns[i]) {
+                const sig = document.getElementById(`map${i}`).value;
+                const action = secretModel[sig];
+                activeInputs[action] = true;
+            }
+        }
+
+        // Edge detection
+        if (activeInputs.ColorCycle && !prevInputs.ColorCycle) {
+            player.colorMode = (player.colorMode + 1) % 3;
+        }
+        if (activeInputs.Jump && !prevInputs.Jump) {
+            jumpRequested = true;
+        }
+        if (activeInputs.Special && !prevInputs.Special) {
+            specialRequested = true;
+        }
+    }
+
+    function updatePhysics() {
+        parseInputs();
+        frameCount++;
+
+        let moveSpeed = (player.colorMode === 0) ? RED_SPEED : BASE_SPEED;
+        let stepPenalty = (player.colorMode === 2) ? STEP_PENALTY_BLUE : STEP_PENALTY_DEFAULT;
+
+        // X Movement
+        if (activeInputs.Left) player.vx = -moveSpeed;
+        else if (activeInputs.Right) player.vx = moveSpeed;
+        else player.vx *= 0.75; 
+
+        player.x += player.vx;
+        
+        // Horizontal Wall Collisions
+        for (let p of objects.platforms) {
+            if (p.type === 'solid' && p.h > 20) { // Treating tall platforms as walls
+                if (player.x < p.x + p.w && player.x + player.w > p.x &&
+                    player.y < p.y + p.h && player.y + player.h > p.y) {
+                    // Push out
+                    if(player.vx > 0) player.x = p.x - player.w;
+                    else if(player.vx < 0) player.x = p.x + p.w;
+                    player.vx = 0;
+                }
+            }
+        }
+        if (player.x < 0) player.x = 0;
+        if (player.x + player.w > canvas.width) player.x = canvas.width - player.w;
+
+        // Y Movement
+        player.vy += GRAVITY;
+
+        // Descend mechanism: Must be RED (0), pressing Special, and Grounded
+        if (player.colorMode === 0 && specialRequested && player.isGrounded) {
+            for(let p of objects.platforms) {
+                if(p.type === 'dropThrough' && player.x + player.w > p.x && player.x < p.x + p.w && Math.abs((player.y + player.h) - p.y) < 3) {
+                    isDropping = true;
+                    player.y += 4; 
+                    player.vy = DESCEND_VELOCITY;
+                    specialRequested = false; 
+                    break;
+                }
+            }
+        }
+
+        player.y += player.vy;
+        specialRequested = false;
+
+        // Jump Logic
+        if (jumpRequested) {
+            if (player.isGrounded) {
+                player.vy = JUMP_FORCE;
+                player.isGrounded = false;
+                if(player.colorMode === 1) canDoubleJump = true; 
+            } else if (player.colorMode === 1 && canDoubleJump) {
+                player.vy = JUMP_FORCE * 0.9;
+                canDoubleJump = false;
+            }
+            jumpRequested = false; 
+        }
+
+        // Hazard / Goal Collisions
+        for (let h of objects.hazards) {
+            if (h.type === 'spike') {
+                if (player.x < h.x + h.w && player.x + player.w > h.x &&
+                    player.y + player.h > h.y && player.y < h.y + h.h) {
+                    if(h.isGoal) resetEpisode(REWARD_WIN, "SUCCESS");
+                    else resetEpisode(PENALTY_SPIKE, "SPIKE");
+                    return;
+                }
+            } else if (h.type === 'trap') {
+                let dx = (player.x + player.w/2) - h.x;
+                let dy = (player.y + player.h/2) - h.y;
+                if (Math.sqrt(dx*dx + dy*dy) < h.r + player.w/2 - 2) {
+                    resetEpisode(PENALTY_TRAP, "TRAP");
+                    return;
+                }
+            }
+        }
+
+        // Platform Solidification
+        player.isGrounded = false;
+        
+        if (!isDropping) {
+            for (let p of objects.platforms) {
+                if (player.vx >= -10 && player.x < p.x + p.w && player.x + player.w > p.x &&
+                    player.y + player.h > p.y && player.y + player.h < p.y + p.h + Math.max(player.vy, 0) + 2) {
+                    
+                    if (player.vy >= 0) { 
+                        player.isGrounded = true;
+                        player.vy = 0;
+                        player.y = p.y - player.h;
+                        canDoubleJump = false; 
+                    }
+                }
+            }
+        }
+        
+        // Reset drop flag once clear of the platform
+        if (isDropping && player.vy > 0) {
+            let intersecting = false;
+            for(let p of objects.platforms) {
+                if(p.type === 'dropThrough' && player.x < p.x + p.w && player.x + player.w > p.x && player.y < p.y + p.h && player.y + player.h > p.y) {
+                    intersecting = true;
+                }
+            }
+            if (!intersecting) isDropping = false;
+        }
+
+        // Fall out of bounds
+        if (player.y > canvas.height) {
+            resetEpisode(PENALTY_FALL, "VOID");
+            return;
+        }
+
+        // Reward Update
+        score += stepPenalty; 
+        scoreDisplay.innerText = score.toFixed(1);
+        rewardDisplay.innerText = stepPenalty.toFixed(2);
+        rewardDisplay.style.color = (player.colorMode === 2) ? '#88f' : '#888'; 
+
+        // Clone current inputs to prevInputs
+        for(let key in activeInputs) prevInputs[key] = activeInputs[key];
+    }
+
+    function draw() {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Scanlines
+        if(frameCount % 2 === 0) {
+            ctx.fillStyle = 'rgba(20, 20, 20, 0.3)';
+            for(let i=0; i<canvas.height; i+=2) ctx.fillRect(0, i, canvas.width, 1);
+        }
+
+        // Platforms
+        for (let p of objects.platforms) {
+            ctx.fillStyle = (p.type === 'dropThrough') ? '#331111' : '#222';
+            ctx.strokeStyle = (p.type === 'dropThrough') ? '#733' : '#444';
+            ctx.lineWidth = 1;
+            ctx.fillRect(p.x, p.y, p.w, p.h);
+            ctx.strokeRect(p.x, p.y, p.w, p.h);
+            
+            if(p.type === 'dropThrough') {
+                ctx.fillStyle = '#f55';
+                ctx.font = '9px sans-serif';
+                ctx.fillText('v RED ONLY v', p.x + 5, p.y+8);
+            }
+        }
+
+        // Hazards and Goals
+        for (let h of objects.hazards) {
+            if (h.type === 'spike') {
+                ctx.fillStyle = h.isGoal ? '#ff0' : '#600'; 
+                for (let i = 0; i < h.w; i += 10) {
+                    ctx.beginPath();
+                    ctx.moveTo(h.x + i, h.y + h.h);
+                    ctx.lineTo(h.x + i + 5, h.y);
+                    ctx.lineTo(h.x + i + 10, h.y + h.h);
+                    ctx.fill();
+                }
+            } else if (h.type === 'trap') {
+                ctx.strokeStyle = `hsl(${(frameCount*6)%360}, 100%, 50%)`;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(h.x, h.y, h.r + Math.sin(frameCount*0.1)*2, 0, Math.PI*2);
+                ctx.stroke();
+                ctx.fillStyle = 'rgba(255, 0, 255, 0.1)';
+                ctx.fill();
+            }
+        }
+
+        // Agent
+        ctx.fillStyle = colorList[player.colorMode];
+        ctx.fillRect(player.x, player.y, player.w, player.h);
+        
+        ctx.fillStyle = '#000';
+        let eyeOffset = Math.sin(frameCount * 0.1) * 2;
+        ctx.fillRect(player.x + 2, player.y + 3 + eyeOffset, 3, 3);
+        ctx.fillRect(player.x + 9, player.y + 3 - eyeOffset, 3, 3);
+    }
+
+    function loop() {
+        updatePhysics();
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    // Rock Solid Input Handling
+    function handleBtn(id, isDown) {
+        physicalBtns[id] = isDown;
+        const btn = document.getElementById(`btn${id}`);
+        if(isDown) btn.classList.add('active-press');
+        else btn.classList.remove('active-press');
+    }
+
+    ['1','2','3','4','5'].forEach(id => {
+        const btn = document.getElementById(`btn${id}`);
+        btn.addEventListener('touchstart', (e) => { e.preventDefault(); handleBtn(id, true); });
+        btn.addEventListener('touchend', (e) => { e.preventDefault(); handleBtn(id, false); });
+        
+        btn.addEventListener('mousedown', () => handleBtn(id, true));
+        btn.addEventListener('mouseup', () => handleBtn(id, false));
+        btn.addEventListener('mouseleave', () => handleBtn(id, false));
+    });
+
+    resetEpisode(0, "INIT");
+    loop();
+</script>
+</body>
+</html>
