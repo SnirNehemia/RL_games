@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>RL Agent Simulator</title>
+    <title>RL Agent Simulator V2</title>
     <style>
         body {
             margin: 0;
@@ -36,31 +36,34 @@
         }
         .controls {
             display: flex;
+            flex-wrap: wrap;
             width: 320px;
-            justify-content: space-between;
+            justify-content: center;
+            gap: 5px;
             margin-top: 10px;
         }
         .control-group {
             display: flex;
             flex-direction: column;
             align-items: center;
-            width: 30%;
+            width: 31%;
+            margin-bottom: 5px;
         }
         .action-btn {
             width: 100%;
-            height: 60px;
+            height: 50px;
             background-color: #222;
             color: #0f0;
             border: 1px solid #0f0;
             border-radius: 5px;
-            font-size: 18px;
+            font-size: 16px;
             font-weight: bold;
-            touch-action: none; /* Prevents mobile scrolling */
+            touch-action: none;
             cursor: pointer;
             user-select: none;
         }
         .action-btn:active {
-            background-color: #0f0;
+            background-color: #ddd;
             color: #000;
         }
         select {
@@ -69,11 +72,12 @@
             color: #0f0;
             border: 1px solid #333;
             width: 100%;
+            font-size: 12px;
             font-family: 'Courier New', Courier, monospace;
         }
         #leaderboard {
             width: 320px;
-            margin-top: 10px;
+            margin-top: 5px;
             font-size: 12px;
             border-top: 1px dashed #333;
             padding-top: 5px;
@@ -102,7 +106,9 @@
         <div class="control-group">
             <button class="action-btn" id="btn1">BTN 1</button>
             <select id="map1">
-                <option value="SigX">Signal X</option>
+                <option value="SigV">Signal V</option>
+                <option value="SigW">Signal W</option>
+                <option value="SigX" selected>Signal X</option>
                 <option value="SigY">Signal Y</option>
                 <option value="SigZ">Signal Z</option>
             </select>
@@ -110,6 +116,8 @@
         <div class="control-group">
             <button class="action-btn" id="btn2">BTN 2</button>
             <select id="map2">
+                <option value="SigV">Signal V</option>
+                <option value="SigW">Signal W</option>
                 <option value="SigX">Signal X</option>
                 <option value="SigY" selected>Signal Y</option>
                 <option value="SigZ">Signal Z</option>
@@ -118,16 +126,38 @@
         <div class="control-group">
             <button class="action-btn" id="btn3">BTN 3</button>
             <select id="map3">
+                <option value="SigV">Signal V</option>
+                <option value="SigW">Signal W</option>
                 <option value="SigX">Signal X</option>
                 <option value="SigY">Signal Y</option>
                 <option value="SigZ" selected>Signal Z</option>
             </select>
         </div>
+        <div class="control-group">
+            <button class="action-btn" id="btn4">BTN 4</button>
+            <select id="map4">
+                <option value="SigV" selected>Signal V</option>
+                <option value="SigW">Signal W</option>
+                <option value="SigX">Signal X</option>
+                <option value="SigY">Signal Y</option>
+                <option value="SigZ">Signal Z</option>
+            </select>
+        </div>
+        <div class="control-group">
+            <button class="action-btn" id="btn5">BTN 5</button>
+            <select id="map5">
+                <option value="SigV">Signal V</option>
+                <option value="SigW" selected>Signal W</option>
+                <option value="SigX">Signal X</option>
+                <option value="SigY">Signal Y</option>
+                <option value="SigZ">Signal Z</option>
+            </select>
+        </div>
     </div>
 
     <div class="instructions">
-        Goal is hidden (POMDP). Learn from the reward.<br>
-        Map buttons to signals to find comfortable controls.
+        Red = Fast | Green = Double Jump | Blue = Less Time Penalty<br>
+        Find the invisible goal!
     </div>
 
     <div id="leaderboard">
@@ -144,31 +174,41 @@
 
     // MDP/Environment Settings
     const GRAVITY = 0.4;
-    const SPEED = 2.5;
+    const BASE_SPEED = 2.0;
+    const RED_SPEED = 4.5;
     const JUMP_FORCE = -7.5;
-    const STEP_PENALTY = -0.1;
 
-    // Secret Mapping: Randomly assign Signals to actual Actions
-    const actions = ['Left', 'Right', 'Jump'];
+    // Action Space & Secret Mapping
+    const actions = ['Left', 'Right', 'Jump', 'Color', 'Special'];
     actions.sort(() => Math.random() - 0.5);
     const secretMap = {
-        'SigX': actions[0],
-        'SigY': actions[1],
-        'SigZ': actions[2]
+        'SigV': actions[0],
+        'SigW': actions[1],
+        'SigX': actions[2],
+        'SigY': actions[3],
+        'SigZ': actions[4]
     };
 
-    let activeActions = { Left: false, Right: false, Jump: false };
+    let activeActions = { Left: false, Right: false, Jump: false, Color: false, Special: false };
+    let prevActions = { Left: false, Right: false, Jump: false, Color: false, Special: false };
 
-    // Game State
+    // Agent State
     let player = { x: 150, y: 250, vx: 0, vy: 0, w: 16, h: 16, isGrounded: false };
-    let goal = { x: 0, y: 0, r: 25 }; // Location randomized per episode
+    let agentColorState = 1; // 0: Red, 1: Green, 2: Blue
+    let colorHex = ['#ff3333', '#33ff33', '#3388ff'];
+    let hasDoubleJumped = false;
+    let specialActive = false;
+    let trail = [];
+
+    // Environment State
+    let goal = { x: 0, y: 0, r: 25 }; 
+    // Adjusted platforms to require double jumps for higher areas
     let platforms = [
         { x: 0, y: 280, w: 320, h: 20 },
-        { x: 40, y: 220, w: 60, h: 10 },
-        { x: 220, y: 180, w: 60, h: 10 },
-        { x: 120, y: 130, w: 80, h: 10 },
-        { x: 30, y: 70, w: 60, h: 10 },
-        { x: 240, y: 50, w: 50, h: 10 }
+        { x: 20, y: 200, w: 60, h: 10 },
+        { x: 130, y: 150, w: 60, h: 10 },
+        { x: 240, y: 100, w: 60, h: 10 },
+        { x: 120, y: 50, w: 80, h: 10 }
     ];
 
     let score = 0;
@@ -177,34 +217,30 @@
     let history = [];
 
     function randomizeGoal() {
-        // Place goal somewhere high up
-        goal.x = 40 + Math.random() * 240;
-        goal.y = 30 + Math.random() * 100;
+        goal.x = 100 + Math.random() * 120;
+        goal.y = 20 + Math.random() * 60;
     }
 
     function resetEpisode(terminalReward) {
         score += terminalReward;
         
-        // Save to leaderboard
         history.unshift(`Ep ${episodeCount}: ${score.toFixed(1)}`);
         if(history.length > 5) history.pop();
         lbEntries.innerHTML = history.join('<br>');
 
-        // Flash UI
         rewardDisplay.innerText = terminalReward > 0 ? `+${terminalReward} (FOUND IT!)` : `${terminalReward} (DIED)`;
         rewardDisplay.style.color = terminalReward > 0 ? '#0f0' : '#f00';
         setTimeout(() => rewardDisplay.style.color = '#0f0', 1000);
 
-        // Reset state
         player.x = 150;
         player.y = 250;
         player.vx = 0;
         player.vy = 0;
         score = 0;
         episodeCount++;
+        trail = [];
         randomizeGoal();
         
-        // Reset distance tracker to force exploration
         minDistanceToGoal = getDistanceToGoal(); 
     }
 
@@ -215,26 +251,41 @@
     }
 
     function updatePhysics() {
-        // Apply inputs
-        if (activeActions.Left) player.vx = -SPEED;
-        else if (activeActions.Right) player.vx = SPEED;
-        else player.vx = 0;
-
-        if (activeActions.Jump && player.isGrounded) {
-            player.vy = JUMP_FORCE;
-            player.isGrounded = false;
+        // Toggle Logic for Color and Special (Edge Detection)
+        if (activeActions.Color && !prevActions.Color) {
+            agentColorState = (agentColorState + 1) % 3;
+        }
+        if (activeActions.Special && !prevActions.Special) {
+            specialActive = !specialActive;
         }
 
-        // Gravity
+        // Apply Contextual Color Mechanics
+        let currentSpeed = (agentColorState === 0) ? RED_SPEED : BASE_SPEED;
+        let stepPenalty = (agentColorState === 2) ? -0.02 : -0.1; 
+
+        // Movement
+        if (activeActions.Left) player.vx = -currentSpeed;
+        else if (activeActions.Right) player.vx = currentSpeed;
+        else player.vx = 0;
+
+        // Jumping Logic
+        if (activeActions.Jump && !prevActions.Jump) {
+            if (player.isGrounded) {
+                player.vy = JUMP_FORCE;
+                player.isGrounded = false;
+            } else if (agentColorState === 1 && !hasDoubleJumped) {
+                // Green Double Jump
+                player.vy = JUMP_FORCE * 0.8; 
+                hasDoubleJumped = true;
+            }
+        }
+
         player.vy += GRAVITY;
 
-        // Move X
         player.x += player.vx;
-        // Screen bounds X
         if (player.x < 0) player.x = 0;
         if (player.x + player.w > canvas.width) player.x = canvas.width - player.w;
 
-        // Move Y
         player.y += player.vy;
         player.isGrounded = false;
 
@@ -246,26 +297,32 @@
                 player.isGrounded = true;
                 player.vy = 0;
                 player.y = p.y - player.h;
+                hasDoubleJumped = false; // Reset double jump on land
             }
         }
 
-        // Death condition
+        // Special Effect: Trail Tracking
+        if (specialActive) {
+            trail.push({x: player.x, y: player.y, color: colorHex[agentColorState]});
+            if (trail.length > 15) trail.shift();
+        } else {
+            if (trail.length > 0) trail.shift();
+        }
+
         if (player.y > canvas.height) {
             resetEpisode(-50);
             return;
         }
 
-        // Reward logic (RL Core)
-        let instantReward = STEP_PENALTY; // Time penalty encourages speed
+        // RL Reward Logic
+        let instantReward = stepPenalty; 
         let dist = getDistanceToGoal();
 
-        // Dense reward for getting closer to the unseen goal (Shaping)
         if (dist < minDistanceToGoal) {
             instantReward += (minDistanceToGoal - dist) * 0.5;
             minDistanceToGoal = dist;
         }
 
-        // Sparse reward for finding the goal
         if (dist < goal.r) {
             resetEpisode(100);
             return;
@@ -273,35 +330,49 @@
 
         score += instantReward;
         
-        // Update UI
         scoreDisplay.innerText = score.toFixed(1);
-        if (Math.abs(instantReward) > 0.15) {
+        if (Math.abs(instantReward) > 0.03) {
             rewardDisplay.innerText = instantReward > 0 ? `+${instantReward.toFixed(2)}` : instantReward.toFixed(2);
-            rewardDisplay.style.color = instantReward > 0 ? '#0f0' : (instantReward < -0.15 ? '#f00' : '#888');
+            rewardDisplay.style.color = instantReward > 0 ? '#0f0' : (instantReward < -0.05 ? '#f00' : '#888');
         }
+
+        // Update previous actions for next frame's edge detection
+        Object.assign(prevActions, activeActions);
     }
 
     function draw() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        // Draw platforms
+        // Draw Platforms
         ctx.fillStyle = '#444';
         for (let p of platforms) {
             ctx.fillRect(p.x, p.y, p.w, p.h);
         }
 
-        // The Goal is INVISIBLE! (POMDP)
-        // Uncomment to debug:
-        // ctx.beginPath(); ctx.arc(goal.x, goal.y, goal.r, 0, Math.PI*2); ctx.fillStyle = 'rgba(255,255,0,0.2)'; ctx.fill();
+        // Draw Special Trail
+        for (let i = 0; i < trail.length; i++) {
+            let t = trail[i];
+            ctx.fillStyle = t.color;
+            ctx.globalAlpha = (i / trail.length) * 0.5; // Fade out
+            ctx.fillRect(t.x + 2, t.y + 2, player.w - 4, player.h - 4);
+        }
+        ctx.globalAlpha = 1.0;
 
-        // Draw Player (Agent)
-        ctx.fillStyle = '#0f0';
+        // Draw Player
+        ctx.fillStyle = colorHex[agentColorState];
         ctx.fillRect(player.x, player.y, player.w, player.h);
         
-        // Draw Eyes to make it look bizarre
+        // Draw Eyes
         ctx.fillStyle = '#000';
         ctx.fillRect(player.x + 3, player.y + 3, 3, 3);
         ctx.fillRect(player.x + 10, player.y + 3, 3, 3);
+        
+        // Aura border if special is active
+        if(specialActive) {
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(player.x - 2, player.y - 2, player.w + 4, player.h + 4);
+        }
     }
 
     function loop() {
@@ -310,24 +381,18 @@
         requestAnimationFrame(loop);
     }
 
-    // Input Handling
     function handleInput(btnId, isDown) {
-        // Read which signal the user has mapped to this button
         const mapSelectId = btnId.replace('btn', 'map');
         const selectedSignal = document.getElementById(mapSelectId).value;
-        
-        // Look up the secret true action for this signal
         const trueAction = secretMap[selectedSignal];
         activeActions[trueAction] = isDown;
     }
 
-    // Mobile touch events
-    ['btn1', 'btn2', 'btn3'].forEach(id => {
+    ['btn1', 'btn2', 'btn3', 'btn4', 'btn5'].forEach(id => {
         const btn = document.getElementById(id);
         btn.addEventListener('touchstart', (e) => { e.preventDefault(); handleInput(id, true); });
         btn.addEventListener('touchend', (e) => { e.preventDefault(); handleInput(id, false); });
         
-        // Mouse fallbacks for desktop testing
         btn.addEventListener('mousedown', () => handleInput(id, true));
         btn.addEventListener('mouseup', () => handleInput(id, false));
         btn.addEventListener('mouseleave', () => handleInput(id, false));
