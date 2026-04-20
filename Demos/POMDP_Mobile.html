@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Agent Environment - Mobile</title>
+<title>Agent Environment - POMDP (Mobile)</title>
 <style>
     body {
         background-color: #050505;
@@ -113,7 +113,7 @@
     <div id="ui">
         <div><span>E:</span> <span id="ep">1</span></div>
         <div><span>Step:</span> <span id="step">0</span></div>
-        <div><span>Pos:</span> <span id="pos" style="color:#0ff;">(1, 1)</span></div>
+        <div><span>&gamma;:</span> <span>0.95</span></div>
         <div><span>R<sub>t</sub>:</span> <span id="rt">0</span></div>
         <div style="grid-column: span 2; width: 100%; border-top: 1px solid #333; padding-top: 8px; margin-top: 2px;">
             <span>Total G:</span> <span id="g">0.00</span>
@@ -153,7 +153,6 @@
     const gDisplay = document.getElementById('g');
     const epDisplay = document.getElementById('ep');
     const stepDisplay = document.getElementById('step');
-    const posDisplay = document.getElementById('pos');
     const scoresBody = document.getElementById('scores-body');
 
     const tileSize = 50; 
@@ -217,7 +216,6 @@
         rtDisplay.innerText = r >= 0 ? `+${r.toFixed(1)}` : r.toFixed(1);
         gDisplay.innerText = currentG.toFixed(2);
         stepDisplay.innerText = stepCount;
-        posDisplay.innerText = `(${px}, ${py})`; 
     }
 
     function updateLeaderboard() {
