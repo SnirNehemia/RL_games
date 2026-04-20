@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Environment - Fully Observable MDP</title>
+<style>
+    body {
+        background-color: #050505;
+        color: #0f0;
+        font-family: 'Courier New', Courier, monospace;
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        height: 100vh;
+        margin: 0;
+        overflow: hidden;
+        padding-top: 20px;
+    }
+    #game-container {
+        display: flex;
+        gap: 20px;
+    }
+    #left-panel {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    #ui {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px 20px;
+        margin-bottom: 20px;
+        background: #111;
+        padding: 15px 30px;
+        border: 1px solid #333;
+        font-size: 1.1rem;
+        width: 300px;
+    }
+    #ui div {
+        display: flex;
+        justify-content: space-between;
+    }
+    canvas {
+        border: 2px solid #333;
+        background-color: #000;
+        box-shadow: 0 0 15px rgba(0, 255, 0, 0.1);
+    }
+    #leaderboard {
+        width: 250px;
+        background: #111;
+        border: 1px solid #333;
+        height: 440px;
+        overflow-y: auto;
+        padding: 10px;
+    }
+    #leaderboard h3 {
+        text-align: center;
+        color: #0f0;
+        margin-top: 0;
+        border-bottom: 1px solid #333;
+        padding-bottom: 10px;
+    }
+    #leaderboard table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+    }
+    #leaderboard th, #leaderboard td {
+        text-align: left;
+        padding: 5px;
+        border-bottom: 1px solid #222;
+    }
+    #leaderboard th {
+        color: #888;
+    }
+</style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="left-panel">
+        <div id="ui">
+            <div><span>E:</span> <span id="ep">1</span></div>
+            <div><span>Step:</span> <span id="step">0</span></div>
+            <div><span>Pos:</span> <span id="pos" style="color:#0ff;">(1, 1)</span></div>
+            <div><span>R<sub>t</sub>:</span> <span id="rt">0</span></div>
+            <div style="grid-column: span 2; width: 100%; border-top: 1px solid #333; padding-top: 10px; margin-top: 5px;">
+                <span>Total G:</span> <span id="g">0.00</span>
+            </div>
+        </div>
+        <canvas id="env" width="250" height="250"></canvas>
+    </div>
+
+    <div id="leaderboard">
+        <h3>HISTORY</h3>
+        <table id="scores-table">
+            <thead>
+                <tr>
+                    <th>Attempt #</th>
+                    <th>Final G</th>
+                </tr>
+            </thead>
+            <tbody id="scores-body">
+                </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('env');
+    const ctx = canvas.getContext('2d');
+
+    const rtDisplay = document.getElementById('rt');
+    const gDisplay = document.getElementById('g');
+    const epDisplay = document.getElementById('ep');
+    const stepDisplay = document.getElementById('step');
+    const posDisplay = document.getElementById('pos');
+    const scoresBody = document.getElementById('scores-body');
+
+    const tileSize = 50; 
+    const viewRadius = 2; // 5x5 view
+    const gamma = 0.95;
+
+    // 0: Floor, 1: Wall, 2: Red Term (-50), 3: Green Term (+100), 4: Yellow (+0.5), 5: Blue Term (+1000)
+    const mapStrings = [
+        "1111111111111111111111111",
+        "1000000000000000000000401",
+        "1011111111101011111111101",
+        "1010000000101010000000101",
+        "1010111110101010111110101",
+        "1000000000000000000000001",
+        "1011111011111110101111111",
+        "1000001000000000101222001",
+        "1011101111111111101111101",
+        "1000000000000000000000001",
+        "1011111111111111111111101",
+        "1014000000000000000000101",
+        "1011111111111111111110101",
+        "1000000000000000000000001",
+        "1011111111111111111111101",
+        "1000000000000000000000101",
+        "1011111111111111111110101",
+        "1000000000000003000010101", // The Green trap (3)
+        "1111111111111101111010101", 
+        "1000000000000000001010101",
+        "1011111111111101101010101",
+        "1010000000000000101010101",
+        "1010111111111101101010101",
+        "1000140000000000000000501", // The Blue optimal reward (5)
+        "1111111111111111111111111"
+    ];
+
+    const originalMap = mapStrings.map(row => row.split('').map(Number));
+    let envMap = JSON.parse(JSON.stringify(originalMap));
+
+    let px = 1;
+    let py = 1;
+    let stepCount = 0;
+    let currentG = 0;
+    let episode = 1;
+    let isResetting = false;
+    let scoresHistory = [];
+
+    const baseActions = [
+        {dx: 0, dy: -1},
+        {dx: 0, dy: 1}, 
+        {dx: -1, dy: 0},
+        {dx: 1, dy: 0}  
+    ];
+    
+    let actionIndices = [0, 1, 2, 3];
+    actionIndices.sort(() => Math.random() - 0.5);
+
+    const keyMap = {
+        'ArrowUp': actionIndices[0], 'w': actionIndices[0],
+        'ArrowDown': actionIndices[1], 's': actionIndices[1],
+        'ArrowLeft': actionIndices[2], 'a': actionIndices[2],
+        'ArrowRight': actionIndices[3], 'd': actionIndices[3]
+    };
+
+    function updateUI(r) {
+        rtDisplay.innerText = r >= 0 ? `+${r.toFixed(1)}` : r.toFixed(1);
+        gDisplay.innerText = currentG.toFixed(2);
+        stepDisplay.innerText = stepCount;
+        posDisplay.innerText = `(${px}, ${py})`; // New True State Data
+    }
+
+    function updateLeaderboard() {
+        scoresHistory.push({ ep: episode, score: currentG.toFixed(2) });
+        
+        scoresBody.innerHTML = '';
+        for (let i = scoresHistory.length - 1; i >= 0; i--) {
+            const row = document.createElement('tr');
+            row.innerHTML = `<td>${scoresHistory[i].ep}</td><td>${scoresHistory[i].score}</td>`;
+            scoresBody.appendChild(row);
+        }
+    }
+
+    function draw() {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        for(let y = -viewRadius; y <= viewRadius; y++) {
+            for(let x = -viewRadius; x <= viewRadius; x++) {
+                let mapX = px + x;
+                let mapY = py + y;
+                
+                let tile = 1; 
+                if(mapY >= 0 && mapY < envMap.length && mapX >= 0 && mapX < envMap[0].length) {
+                    tile = envMap[mapY][mapX];
+                }
+
+                if(tile === 1) ctx.fillStyle = '#111827';
+                else if(tile === 0) ctx.fillStyle = '#0a0a0a';
+                else if(tile === 2) ctx.fillStyle = '#7f1d1d';
+                else if(tile === 3) ctx.fillStyle = '#166534';
+                else if(tile === 4) ctx.fillStyle = '#ca8a04';
+                else if(tile === 5) ctx.fillStyle = '#1e40af';
+
+                let drawX = (x + viewRadius) * tileSize;
+                let drawY = (y + viewRadius) * tileSize;
+
+                ctx.fillRect(drawX, drawY, tileSize, tileSize);
+                
+                ctx.strokeStyle = '#050505';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(drawX, drawY, tileSize, tileSize);
+            }
+        }
+
+        ctx.fillStyle = '#06b6d4';
+        let agentPos = viewRadius * tileSize;
+        let offset = 12; 
+        ctx.fillRect(agentPos + offset, agentPos + offset, tileSize - (offset*2), tileSize - (offset*2));
+    }
+
+    function resetEnv() {
+        updateLeaderboard();
+        envMap = JSON.parse(JSON.stringify(originalMap));
+        
+        currentG = 0;
+        stepCount = 0;
+        episode++;
+        px = 1;
+        py = 1;
+        
+        epDisplay.innerText = episode;
+        updateUI(0);
+        draw();
+        isResetting = false;
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if(isResetting || keyMap[e.key] === undefined) return;
+        
+        let action = baseActions[keyMap[e.key]];
+        let nx = px + action.dx;
+        let ny = py + action.dy;
+        
+        let r = 0;
+        let terminal = false;
+
+        if(ny < 0 || ny >= envMap.length || nx < 0 || nx >= envMap[0].length) {
+            r = -1;
+        } else {
+            let tile = envMap[ny][nx];
+            if(tile === 1) {
+                r = -1; 
+            } else if (tile === 0) {
+                r = -0.1;
+                px = nx; py = ny;
+            } else if (tile === 4) {
+                r = 0.5;
+                px = nx; py = ny;
+                envMap[ny][nx] = 0; 
+            } else if (tile === 2) {
+                r = -50; 
+                px = nx; py = ny;
+                terminal = true;
+            } else if (tile === 3) {
+                r = 100;
+                px = nx; py = ny;
+                terminal = true;
+            } else if (tile === 5) {
+                r = 1000;
+                px = nx; py = ny;
+                terminal = true;
+            }
+        }
+
+        currentG += r * Math.pow(gamma, stepCount);
+        stepCount++;
+
+        updateUI(r);
+        draw();
+
+        if(terminal) {
+            isResetting = true;
+            setTimeout(resetEnv, 750);
+        }
+    });
+
+    draw();
+</script>
+</body>
+</html>
